@@ -231,7 +231,7 @@ Construct a vector with `x` replicated to all lanes:
 def S.splat(x):
     result = S.New()
     for i in range(S.Lanes):
-        result[i] = x
+        result[i] = S.Reduce(x)
     return result
 ```
 
@@ -488,6 +488,21 @@ each pair.
 def S.max(a, b):
     return S.lanewise_binary(max, a, b)
 ```
+
+### Lane-wise integer rounding average
+* `i8x16.avgr_u(a: v128, b: v128) -> v128`
+* `i16x8.avgr_u(a: v128, b: v128) -> v128`
+
+Lane-wise rounding average:
+
+```python
+def S.RoundingAverage(x, y):
+    return (x + y + 1) // 2
+
+def S.avgr_u(a, b):
+    return S.lanewise_binary(S.RoundingAverage, S.AsUnsigned(a), S.AsUnsigned(b))
+```
+
 ## Bit shifts
 
 ### Left shift by scalar
@@ -730,7 +745,7 @@ def S.load_splat(memarg):
 * `i64x2.load32x2_s(memarg) -> v128`: load two 32-bit integers and sign extend each one to a 64-bit lane
 * `i64x2.load32x2_u(memarg) -> v128`: load two 32-bit integers and zero extend each one to a 64-bit lane
 
-Fetch consequtive integers up to 32-bit wide and produce a vector with lanes up to 64 bits.
+Fetch consecutive integers up to 32-bit wide and produce a vector with lanes up to 64 bits.
 
 ```python
 def S.load_extend(ext, memarg):

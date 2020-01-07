@@ -39,6 +39,23 @@ let ati i =
 let literal f s =
   try f s with Failure _ -> error s.at "constant out of range"
 
+let simd_literal shape ss at =
+  try
+    let v = V128.of_strings shape (List.map (fun s -> s.it) ss) in
+    (v128_const (v @@ at), Values.V128 v)
+  with
+    (* TODO better location for error messages. *)
+    | Failure _ -> error at "constant out of range"
+    | Invalid_argument _ -> error at "wrong number of lane literals"
+
+let nanop f nan =
+  let open Source in
+  let open Values in
+  match snd (f ("0" @@ no_region)) with
+  | F32 _ -> F32 nan.it @@ nan.at
+  | F64 _ -> F64 nan.it @@ nan.at
+  | I32 _ | I64 _ | V128 _ -> error nan.at "NaN pattern with non-float type"
+
 let nat s at =
   try
     let n = int_of_string s in
@@ -145,19 +162,20 @@ let inline_type_explicit (c : context) x ft at =
 
 %}
 
-%token NAT INT FLOAT STRING VAR VALUE_TYPE FUNCREF MUT LPAR RPAR
+%token NAT INT FLOAT STRING VAR VALUE_TYPE FUNCREF MUT LPAR RPAR SIMD_SHAPE
 %token NOP DROP BLOCK END IF THEN ELSE SELECT LOOP BR BR_IF BR_TABLE
 %token CALL CALL_INDIRECT RETURN
 %token LOCAL_GET LOCAL_SET LOCAL_TEE GLOBAL_GET GLOBAL_SET
 %token LOAD STORE OFFSET_EQ_NAT ALIGN_EQ_NAT
-%token CONST UNARY BINARY TEST COMPARE CONVERT
+%token CONST V128_CONST UNARY BINARY TEST COMPARE CONVERT
 %token UNREACHABLE MEMORY_SIZE MEMORY_GROW
 %token FUNC START TYPE PARAM RESULT LOCAL GLOBAL
 %token TABLE ELEM MEMORY DATA OFFSET IMPORT EXPORT TABLE
 %token MODULE BIN QUOTE
 %token SCRIPT REGISTER INVOKE GET
 %token ASSERT_MALFORMED ASSERT_INVALID ASSERT_SOFT_INVALID ASSERT_UNLINKABLE
-%token ASSERT_RETURN ASSERT_RETURN_CANONICAL_NAN ASSERT_RETURN_ARITHMETIC_NAN ASSERT_TRAP ASSERT_EXHAUSTION
+%token ASSERT_RETURN ASSERT_TRAP ASSERT_EXHAUSTION
+%token NAN
 %token INPUT OUTPUT
 %token EOF
 
@@ -177,6 +195,9 @@ let inline_type_explicit (c : context) x ft at =
 %token<int option -> Memory.offset -> Ast.instr'> STORE
 %token<string> OFFSET_EQ_NAT
 %token<string> ALIGN_EQ_NAT
+%token<Simd.shape> SIMD_SHAPE
+
+%token<Script.nan> NAN
 
 %nonassoc LOW
 %nonassoc VAR
@@ -246,6 +267,10 @@ literal :
   | NAT { $1 @@ at () }
   | INT { $1 @@ at () }
   | FLOAT { $1 @@ at () }
+
+literal_list:
+  | /* empty */ { [] }
+  | literal literal_list { $1 :: $2 }
 
 var :
   | NAT { let at = at () in fun c lookup -> nat32 $1 at @@ at }
@@ -320,6 +345,7 @@ plain_instr :
   | MEMORY_SIZE { fun c -> memory_size }
   | MEMORY_GROW { fun c -> memory_grow }
   | CONST literal { fun c -> fst (literal $1 $2) }
+  | V128_CONST SIMD_SHAPE literal_list { let at = at () in fun c -> fst (simd_literal $2 $3 at) }
   | TEST { fun c -> $1 }
   | COMPARE { fun c -> $1 }
   | UNARY { fun c -> $1 }
@@ -795,9 +821,7 @@ assertion :
     { AssertUnlinkable (snd $3, $4) @@ at () }
   | LPAR ASSERT_TRAP script_module STRING RPAR
     { AssertUninstantiable (snd $3, $4) @@ at () }
-  | LPAR ASSERT_RETURN action const_list RPAR { AssertReturn ($3, $4) @@ at () }
-  | LPAR ASSERT_RETURN_CANONICAL_NAN action RPAR { AssertReturnCanonicalNaN $3 @@ at () }
-  | LPAR ASSERT_RETURN_ARITHMETIC_NAN action RPAR { AssertReturnArithmeticNaN $3 @@ at () }
+  | LPAR ASSERT_RETURN action result_list RPAR { AssertReturn ($3, $4) @@ at () }
   | LPAR ASSERT_TRAP action STRING RPAR { AssertTrap ($3, $4) @@ at () }
   | LPAR ASSERT_EXHAUSTION action STRING RPAR { AssertExhaustion ($3, $4) @@ at () }
 
@@ -820,10 +844,21 @@ meta :
 
 const :
   | LPAR CONST literal RPAR { snd (literal $2 $3) @@ ati 3 }
+  | LPAR V128_CONST SIMD_SHAPE literal_list RPAR {
+      snd (simd_literal $3 $4 (at ())) @@ ati 4
+  }
 
 const_list :
   | /* empty */ { [] }
   | const const_list { $1 :: $2 }
+
+result :
+  | const { LitResult $1 @@ at () }
+  | LPAR CONST NAN RPAR { NanResult (nanop $2 ($3 @@ ati 3)) @@ at () }
+
+result_list :
+  | /* empty */ { [] }
+  | result result_list { $1 :: $2 }
 
 script :
   | cmd_list EOF { $1 }
